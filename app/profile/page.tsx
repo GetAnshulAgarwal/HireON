@@ -1,0 +1,445 @@
+"use client";
+
+import Navbar from "@/components/navbar";
+import { useState, useEffect } from "react";
+import toast from "react-hot-toast";
+import Image from "next/image";
+
+interface Contact {
+  name?: string;
+  email?: string;
+  phone?: string;
+}
+
+interface Experience {
+  title: string;
+  company: string;
+  years: string;
+}
+
+interface Education {
+  degree: string;
+  school: string;
+  year: string;
+}
+
+interface ResumeData {
+  contact: Contact;
+  skills: string[];
+  experience: Experience[];
+  education: Education[];
+}
+
+interface ProfileData {
+  username: string;
+  email: string;
+  userType?: "candidate" | "recruiter";
+  profilePic?: string;
+  resumeParsed?: ResumeData;
+}
+
+type Section = "contact" | "skills" | "experience" | "education";
+
+export default function Profile() {
+  const [profile, setProfile] = useState<ProfileData | null>(null);
+  const [editMode, setEditMode] = useState(false);
+  const [imageError, setImageError] = useState(false);
+  const [formData, setFormData] = useState<ResumeData>({
+    contact: {},
+    skills: [],
+    experience: [],
+    education: [],
+  });
+
+  useEffect(() => {
+    const fetchProfile = async () => {
+      const token = localStorage.getItem("token");
+      if (!token) {
+        console.log("No token found");
+        return;
+      }
+      try {
+        const res = await fetch(
+          "https://hiring-platform-beta.onrender.com/api/auth/profile",
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (!res.ok) throw new Error(`Failed to fetch profile: ${res.status}`);
+        const data = await res.json();
+        // Normalize userType to ensure it matches the union type
+        const normalizedUserType: "candidate" | "recruiter" =
+          data.userType === "recruiter" ? "recruiter" : "candidate";
+        const profileData: ProfileData = {
+          username: data.username,
+          email: data.email,
+          userType: normalizedUserType,
+          profilePic: data.profilePic,
+          resumeParsed: data.resumeParsed,
+        };
+        setProfile(profileData);
+        setFormData(
+          data.resumeParsed || {
+            contact: {},
+            skills: [],
+            experience: [],
+            education: [],
+          }
+        );
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : "Unknown error";
+        console.error("Error fetching profile:", errorMessage);
+        toast.error(`Error fetching profile: ${errorMessage}`);
+      }
+    };
+    fetchProfile();
+  }, []);
+
+  const handleChange = (
+    e: React.ChangeEvent<HTMLInputElement>,
+    section: Section
+  ) => {
+    if (section === "contact") {
+      setFormData((prev) => ({
+        ...prev,
+        contact: {
+          ...prev.contact,
+          [e.target.name]: e.target.value,
+        },
+      }));
+    }
+  };
+
+  function handleArrayChange(
+    section: "skills" | "experience" | "education",
+    index: number,
+    value: string | Partial<Experience> | Partial<Education>
+  ): void {
+    setFormData((prev) => {
+      const updated = { ...prev };
+      if (section === "skills") {
+        const skills = [...updated.skills];
+        skills[index] = value as string;
+        updated.skills = skills;
+      } else if (section === "experience") {
+        const experience = [...updated.experience];
+        experience[index] = {
+          ...experience[index],
+          ...(value as Partial<Experience>),
+        };
+        updated.experience = experience;
+      } else if (section === "education") {
+        const education = [...updated.education];
+        education[index] = {
+          ...education[index],
+          ...(value as Partial<Education>),
+        };
+        updated.education = education;
+      }
+      return updated;
+    });
+  }
+
+  const addItem = (section: "skills" | "experience" | "education") => {
+    setFormData((prev) => {
+      const updated = { ...prev };
+      if (section === "skills") {
+        updated.skills = [...updated.skills, ""];
+      } else if (section === "experience") {
+        updated.experience = [
+          ...updated.experience,
+          { title: "", company: "", years: "" },
+        ];
+      } else if (section === "education") {
+        updated.education = [
+          ...updated.education,
+          { degree: "", school: "", year: "" },
+        ];
+      }
+      return updated;
+    });
+  };
+
+  const removeItem = (
+    section: "skills" | "experience" | "education",
+    index: number
+  ) => {
+    setFormData((prev) => {
+      const updated = { ...prev };
+      if (section === "skills") {
+        updated.skills = updated.skills.filter((_, i) => i !== index);
+      } else if (section === "experience") {
+        updated.experience = updated.experience.filter((_, i) => i !== index);
+      } else if (section === "education") {
+        updated.education = updated.education.filter((_, i) => i !== index);
+      }
+      return updated;
+    });
+  };
+
+  const handleSave = async () => {
+    const token = localStorage.getItem("token");
+    try {
+      const res = await fetch(
+        "https://hiring-platform-beta.onrender.com/api/auth/profile",
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ resumeParsed: formData }),
+        }
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.msg || "Failed to update profile");
+      setProfile((prev) => (prev ? { ...prev, resumeParsed: formData } : prev));
+      setEditMode(false);
+      toast.success("Profile updated successfully!");
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : "Unknown error";
+      console.error("Error updating profile:", errorMessage);
+      toast.error("Error: " + errorMessage);
+    }
+  };
+
+  const handleImageError = () => {
+    if (!imageError) {
+      setImageError(true);
+    }
+  };
+
+  if (!profile) {
+    return (
+      <div className="min-h-screen bg-background text-foreground flex items-center justify-center">
+        Loading...
+      </div>
+    );
+  }
+
+  const profileSrc = imageError
+    ? "/uploads/default.jpg"
+    : profile.profilePic?.startsWith("http")
+    ? profile.profilePic
+    : `https://hiring-platform-beta.onrender.com${profile.profilePic || "/uploads/default.jpg"}`;
+
+  return (
+    <div className="min-h-screen flex flex-col bg-background">
+      <Navbar userType={profile.userType} />
+      <main className="flex-1 p-6">
+        <div className="bg-accent p-6 rounded-lg mb-8 shadow-md">
+          <h1 className="text-3xl font-semibold text-center text-foreground">
+            Profile Details
+          </h1>
+        </div>
+        <div className="bg-accent p-8 rounded-lg shadow-md">
+          <div className="flex justify-center mb-6">
+            <Image
+              src={profileSrc}
+              alt="Profile"
+              width={128}
+              height={128}
+              className="w-32 h-32 rounded-full object-cover border-4 border-primary shadow-lg"
+              onError={handleImageError}
+              unoptimized
+            />
+          </div>
+          <div className="text-center mb-6">
+            <h2 className="text-2xl font-bold text-foreground">
+              {profile.username}
+            </h2>
+            <p className="text-gray-300">{profile.email}</p>
+            <p className="text-sm text-gray-400 capitalize">{profile.userType}</p>
+          </div>
+
+          {profile.resumeParsed ? (
+            editMode ? (
+              <div className="mt-4">
+                <h3 className="font-bold text-foreground text-lg mb-2">Contact</h3>
+                <input
+                  name="name"
+                  value={formData.contact?.name || ""}
+                  onChange={(e) => handleChange(e, "contact")}
+                  className="input-field mb-2"
+                  placeholder="Name"
+                />
+                <input
+                  name="email"
+                  value={formData.contact?.email || ""}
+                  onChange={(e) => handleChange(e, "contact")}
+                  className="input-field mb-2"
+                  placeholder="Email"
+                />
+                <input
+                  name="phone"
+                  value={formData.contact?.phone || ""}
+                  onChange={(e) => handleChange(e, "contact")}
+                  className="input-field mb-2"
+                  placeholder="Phone"
+                />
+
+                <h3 className="font-bold text-foreground text-lg mt-4 mb-2">Skills</h3>
+                {formData.skills?.map((skill: string, i: number) => (
+                  <div key={i} className="flex items-center mb-2">
+                    <input
+                      value={skill}
+                      onChange={(e) =>
+                        handleArrayChange("skills", i, e.target.value)
+                      }
+                      className="input-field flex-1"
+                      placeholder="Skill"
+                    />
+                    <button
+                      onClick={() => removeItem("skills", i)}
+                      className="ml-2 btn-danger"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+                <button onClick={() => addItem("skills")} className="btn-secondary mt-2">
+                  Add Skill
+                </button>
+
+                <h3 className="font-bold text-foreground text-lg mt-4 mb-2">Experience</h3>
+                {formData.experience?.map((exp, i) => (
+                  <div key={i} className="mb-4 border-b border-border pb-2">
+                    <input
+                      name="title"
+                      value={exp.title || ""}
+                      onChange={(e) =>
+                        handleArrayChange("experience", i, { title: e.target.value })
+                      }
+                      className="input-field mb-2"
+                      placeholder="Job Title"
+                    />
+                    <input
+                      name="company"
+                      value={exp.company || ""}
+                      onChange={(e) =>
+                        handleArrayChange("experience", i, { company: e.target.value })
+                      }
+                      className="input-field mb-2"
+                      placeholder="Company"
+                    />
+                    <input
+                      name="years"
+                      value={exp.years || ""}
+                      onChange={(e) =>
+                        handleArrayChange("experience", i, { years: e.target.value })
+                      }
+                      className="input-field mb-2"
+                      placeholder="Years (e.g., 2019-2021)"
+                    />
+                    <button onClick={() => removeItem("experience", i)} className="btn-danger">
+                      Remove
+                    </button>
+                  </div>
+                ))}
+                <button onClick={() => addItem("experience")} className="btn-secondary mt-2">
+                  Add Experience
+                </button>
+
+                <h3 className="font-bold text-foreground text-lg mt-4 mb-2">Education</h3>
+                {formData.education?.map((edu, i) => (
+                  <div key={i} className="mb-4 border-b border-border pb-2">
+                    <input
+                      name="degree"
+                      value={edu.degree || ""}
+                      onChange={(e) =>
+                        handleArrayChange("education", i, { degree: e.target.value })
+                      }
+                      className="input-field mb-2"
+                      placeholder="Degree"
+                    />
+                    <input
+                      name="school"
+                      value={edu.school || ""}
+                      onChange={(e) =>
+                        handleArrayChange("education", i, { school: e.target.value })
+                      }
+                      className="input-field mb-2"
+                      placeholder="School"
+                    />
+                    <input
+                      name="year"
+                      value={edu.year || ""}
+                      onChange={(e) =>
+                        handleArrayChange("education", i, { year: e.target.value })
+                      }
+                      className="input-field mb-2"
+                      placeholder="Year"
+                    />
+                    <button onClick={() => removeItem("education", i)} className="btn-danger">
+                      Remove
+                    </button>
+                  </div>
+                ))}
+                <button onClick={() => addItem("education")} className="btn-secondary mt-2">
+                  Add Education
+                </button>
+
+                <div className="flex justify-center mt-6 space-x-4">
+                  <button onClick={() => setEditMode(false)} className="btn-secondary">
+                    Cancel
+                  </button>
+                  <button onClick={handleSave} className="btn-primary">
+                    Save
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-4 space-y-6 text-foreground">
+                <div>
+                  <h3 className="font-bold text-lg mb-2">Contact</h3>
+                  <p>{profile.resumeParsed.contact?.name || "N/A"}</p>
+                  <p>{profile.resumeParsed.contact?.email || "N/A"}</p>
+                  <p>{profile.resumeParsed.contact?.phone || "N/A"}</p>
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg mb-2">Skills</h3>
+                  <ul className="list-disc pl-4">
+                    {profile.resumeParsed.skills && profile.resumeParsed.skills.length > 0 ? (
+                      profile.resumeParsed.skills.map((s) => <li key={s}>{s}</li>)
+                    ) : (
+                      <li>N/A</li>
+                    )}
+                  </ul>
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg mb-2">Experience</h3>
+                  {profile.resumeParsed.experience && profile.resumeParsed.experience.length > 0 ? (
+                    profile.resumeParsed.experience.map((e, i) => (
+                      <p key={i}>
+                        {e.title} at {e.company} ({e.years})
+                      </p>
+                    ))
+                  ) : (
+                    <p>N/A</p>
+                  )}
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg mb-2">Education</h3>
+                  {profile.resumeParsed.education && profile.resumeParsed.education.length > 0 ? (
+                    profile.resumeParsed.education.map((e, i) => (
+                      <p key={i}>
+                        {e.degree}, {e.school} ({e.year})
+                      </p>
+                    ))
+                  ) : (
+                    <p>N/A</p>
+                  )}
+                </div>
+                <div className="flex justify-center mt-6">
+                  <button onClick={() => setEditMode(true)} className="btn-primary">
+                    Edit
+                  </button>
+                </div>
+              </div>
+            )
+          ) : (
+            <p className="text-center text-gray-400">No resume uploaded yet.</p>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}

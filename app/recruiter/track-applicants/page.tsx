@@ -1,0 +1,628 @@
+"use client";
+
+import Navbar from "@/components/navbar";
+import { CircleUser, FileText, MoreHorizontal, MessageSquare, X } from "lucide-react";
+import { useState, useEffect } from "react";
+import toast from "react-hot-toast";
+import { useRouter } from "next/navigation";
+import { io, Socket } from "socket.io-client";
+
+// ── Interfaces ────────────────────────────────────────────────────────────────
+
+interface ResumeContact {
+  name?: string;
+  email?: string;
+  phone?: string;
+}
+
+interface ResumeExperience {
+  title: string;
+  company: string;
+  years: string;
+}
+
+interface ResumeEducation {
+  degree: string;
+  school: string;
+  year: string;
+}
+
+interface ResumeParsed {
+  contact?: ResumeContact;
+  skills?: string[];
+  experience?: ResumeExperience[];
+  education?: ResumeEducation[];
+}
+
+interface Candidate {
+  _id: string;
+  username: string;
+  resumeParsed?: ResumeParsed;
+  resumeFile?: string;
+}
+
+interface Job {
+  _id: string;
+  title: string;
+}
+
+interface Application {
+  _id: string;
+  candidate: Candidate;
+  job: Job;
+  status: string;
+  coverLetter?: string;
+  resumeText?: string;
+}
+
+interface ChatMessage {
+  _id?: string;
+  sender: string;
+  content: string;
+  attachment?: string;
+  attachmentType?: string;
+  timestamp: string;
+}
+
+interface ChatModal {
+  _id: string;
+  application: string;
+  messages: ChatMessage[];
+}
+
+interface Analysis {
+  score: number;
+  feedback: string;
+  matchedSkills: string[];
+  missingSkills: string[];
+}
+
+interface Notification {
+  chatId: string;
+  message: ChatMessage;
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
+export default function TrackApplicants() {
+  const [applications, setApplications] = useState<Application[]>([]);
+  const [selectedApplicant, setSelectedApplicant] = useState<Application | null>(null);
+  const [analysis, setAnalysis] = useState<Analysis | null>(null);
+  const [statusUpdates, setStatusUpdates] = useState<Record<string, string>>({});
+  const [showChatModal, setShowChatModal] = useState<ChatModal | null>(null);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [newMessage, setNewMessage] = useState("");
+  const [attachment, setAttachment] = useState<File | null>(null);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [socket, setSocket] = useState<Socket | null>(null);
+
+  const router = useRouter();
+
+  useEffect(() => {
+    const token = localStorage.getItem("token");
+    if (!token) {
+      router.push("/");
+      return;
+    }
+
+    const socketInstance = io("https://hiring-platform-beta.onrender.com", {
+      auth: { token },
+    });
+    setSocket(socketInstance);
+
+    const fetchApplications = async () => {
+      try {
+        const res = await fetch("https://hiring-platform-beta.onrender.com/api/applications", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error("Failed to fetch applications");
+        const data: Application[] = await res.json();
+        setApplications(data);
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : "Unknown error";
+        toast.error(`Error: ${errorMessage}`);
+        if (errorMessage.includes("401")) {
+          localStorage.removeItem("token");
+          router.push("/");
+        }
+      }
+    };
+    fetchApplications();
+
+    socketInstance.on("connect", () => console.log("Socket connected"));
+    socketInstance.on("connect_error", (err: Error) =>
+      console.error("Socket error:", err)
+    );
+    socketInstance.on("message", (message: ChatMessage) => {
+      if (showChatModal && showChatModal._id === message._id) {
+        setChatMessages((prev) => {
+          const isDuplicate = prev.some(
+            (m) =>
+              m._id === message._id ||
+              (m.content === message.content && m.timestamp === message.timestamp)
+          );
+          return isDuplicate ? prev : [...prev, message];
+        });
+      }
+    });
+    socketInstance.on(
+      "notification",
+      ({ chatId, message }: { chatId: string; message: ChatMessage }) => {
+        if (message.sender !== localStorage.getItem("userId")) {
+          setNotifications((prev) => [...prev, { chatId, message }]);
+          setTimeout(() => setNotifications((prev) => prev.slice(1)), 5000);
+        }
+      }
+    );
+
+    return () => {
+      socketInstance.off("message");
+      socketInstance.off("notification");
+      socketInstance.off("connect");
+      socketInstance.off("connect_error");
+      socketInstance.disconnect();
+    };
+  }, [router, showChatModal]);
+
+  const handleStatusChange = (appId: string, value: string) => {
+    setStatusUpdates((prev) => ({ ...prev, [appId]: value }));
+  };
+
+  const handleSubmitStatus = async (appId: string) => {
+    const token = localStorage.getItem("token");
+    const newStatus =
+      statusUpdates[appId] || applications.find((a) => a._id === appId)?.status;
+
+    try {
+      const res = await fetch(
+        `https://hiring-platform-beta.onrender.com/api/applications/${appId}/status`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ status: newStatus }),
+        }
+      );
+
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.msg || `Failed to update status (Status: ${res.status})`);
+      }
+      if (newStatus === "Not Selected") {
+        setApplications((prev) => prev.filter((app) => app._id !== appId));
+      } else {
+        setApplications((prev) =>
+          prev.map((app) =>
+            app._id === appId ? { ...app, status: newStatus ?? app.status } : app
+          )
+        );
+      }
+      toast.success("Status updated successfully!");
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : "Unknown error";
+      console.error("Error updating status:", err);
+      toast.error(`Error: ${errorMessage}`);
+    }
+  };
+
+  const handleChat = async (app: Application) => {
+    console.log("--- DEBUG: handleChat called with app:", app);
+    setChatMessages([]);
+    const token = localStorage.getItem("token");
+    try {
+      const res = await fetch(
+        `https://hiring-platform-beta.onrender.com/api/chat/${app._id}`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+      if (!res.ok) throw new Error("Failed to load chat");
+      const chat: ChatModal = await res.json();
+      console.log("--- DEBUG: Chat object received in handleChat:", chat);
+      setShowChatModal(chat);
+      setChatMessages(chat.messages);
+      socket?.emit("joinChat", chat._id);
+
+      await fetch(
+        `https://hiring-platform-beta.onrender.com/api/chat/${chat._id}/read`,
+        {
+          method: "PUT",
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : "Unknown error";
+      toast.error(`Error loading chat: ${errorMessage}`);
+    }
+  };
+
+  const sendMessage = async () => {
+    console.log("--- DEBUG: sendMessage called.");
+    const messageText = newMessage.trim();
+
+    if (!messageText && !attachment) {
+      toast.error("Message content or attachment is required.");
+      return;
+    }
+    if (!showChatModal || !showChatModal.application) {
+      toast.error("Chat context missing. Please reopen the chat.");
+      console.error("showChatModal or showChatModal.application is missing:", showChatModal);
+      return;
+    }
+
+    const token = localStorage.getItem("token");
+    const formData = new FormData();
+
+    if (messageText) {
+      formData.append("content", messageText);
+    } else if (!attachment) {
+      toast.error("Message content or attachment is required.");
+      return;
+    }
+
+    if (attachment) formData.append("attachment", attachment);
+
+    try {
+      const targetUrl = `https://hiring-platform-beta.onrender.com/api/chat/${showChatModal.application}`;
+      console.log("--- DEBUG: Attempting to send message to URL:", targetUrl);
+      console.log("--- DEBUG: showChatModal content for sendMessage:", showChatModal);
+      const res = await fetch(targetUrl, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`Failed to send message: ${errorText}`);
+      }
+      const message: ChatMessage = await res.json();
+      setChatMessages((prev) => [...prev, message]);
+      setNewMessage("");
+      setAttachment(null);
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : "Unknown error";
+      toast.error(`Error sending message: ${errorMessage}`);
+    }
+  };
+
+  const closeChatModal = () => {
+    setShowChatModal(null);
+    setChatMessages([]);
+    setNewMessage("");
+  };
+
+  const handleAnalyze = async (app: Application) => {
+    const token = localStorage.getItem("token");
+    if (!token) {
+      toast.error("No token found. Please log in again.");
+      router.push("/");
+      return;
+    }
+    try {
+      console.log("Analyzing:", { resumeText: app.resumeText, jobId: app.job._id });
+      const res = await fetch(
+        "https://hiring-platform-beta.onrender.com/api/applications/analyze",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ resumeText: app.resumeText, jobId: app.job._id }),
+        }
+      );
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`Analysis failed: ${res.status} - ${errorText}`);
+      }
+      const analysisData: Analysis = await res.json();
+      setAnalysis(analysisData);
+      setSelectedApplicant(app);
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : "Unknown error";
+      console.error("Error analyzing:", err);
+      toast.error(errorMessage || "Failed to analyze application.");
+    }
+  };
+
+  const handleDetails = (app: Application) => {
+    setSelectedApplicant(app);
+    setAnalysis(null);
+  };
+
+  const handleDownloadResume = async (userId: string) => {
+    const token = localStorage.getItem("token");
+    if (!token) {
+      toast.error("Please log in to download the resume.");
+      return;
+    }
+
+    try {
+      const res = await fetch(
+        `https://hiring-platform-beta.onrender.com/api/resume/download/${userId}`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.msg || "Failed to download resume");
+      }
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `resume-${userId}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : "Unknown error";
+      console.error("Download error:", err);
+      toast.error("Error: " + errorMessage);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex flex-col bg-background">
+      <Navbar userType="recruiter" />
+      <main className="flex-1 p-6">
+        <div className="bg-accent p-6 rounded-lg mb-8 shadow-md">
+          <h1 className="text-3xl font-semibold text-center uppercase text-foreground">
+            Track Applicants
+          </h1>
+        </div>
+        <div className="space-y-6">
+          {applications.length > 0 ? (
+            applications.map((app) => (
+              <div key={app._id} className="card">
+                <div className="flex items-center">
+                  <CircleUser className="h-10 w-10 text-primary mr-4" />
+                  <div className="flex-1 text-foreground">
+                    <p className="font-bold text-lg">{app.candidate.username}</p>
+                    <p className="text-sm">{app.job.title}</p>
+                    <p className="text-xs">Current Status: {app.status}</p>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <button onClick={() => handleChat(app)} className="btn-icon" title="Chat">
+                      <MessageSquare className="h-5 w-5" />
+                    </button>
+                    <button
+                      onClick={() => handleAnalyze(app)}
+                      className="btn-icon"
+                      title="Analyze with AI"
+                    >
+                      <MoreHorizontal className="h-5 w-5" />
+                    </button>
+                    <button
+                      onClick={() => handleDetails(app)}
+                      className="btn-icon"
+                      title="Details"
+                    >
+                      <FileText className="h-5 w-5" />
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-4">
+                  <select
+                    value={statusUpdates[app._id] || app.status}
+                    onChange={(e) => handleStatusChange(app._id, e.target.value)}
+                    className="input-field mb-2"
+                  >
+                    <option value="Applied" className="bg-background text-foreground">
+                      Applied
+                    </option>
+                    <option value="Under Review" className="bg-background text-foreground">
+                      Under Review
+                    </option>
+                    <option value="Selected" className="bg-background text-foreground">
+                      Selected
+                    </option>
+                    <option value="Not Selected" className="bg-background text-foreground">
+                      Not Selected
+                    </option>
+                  </select>
+                  <button
+                    onClick={() => handleSubmitStatus(app._id)}
+                    className="btn-primary w-full"
+                  >
+                    Submit
+                  </button>
+                </div>
+              </div>
+            ))
+          ) : (
+            <p className="text-center text-foreground">No applicants found.</p>
+          )}
+        </div>
+
+        {showChatModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 modal">
+            <div className="bg-accent p-6 rounded-lg shadow-lg w-full max-w-lg modal-content">
+              <h2 className="text-xl font-bold text-primary mb-4">Chat with Candidate</h2>
+              <div className="h-64 overflow-y-auto mb-4 bg-background p-2 rounded">
+                {chatMessages.map((msg, index) => (
+                  <div
+                    key={index}
+                    className={`mb-2 ${
+                      msg.sender === localStorage.getItem("userId")
+                        ? "text-right"
+                        : "text-left"
+                    }`}
+                  >
+                    <p className="text-foreground">{msg.content}</p>
+                    {msg.attachment && (
+                      <a
+                        href={`https://hiring-platform-beta.onrender.com${msg.attachment}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-info underline"
+                      >
+                        {msg.attachmentType === "link"
+                          ? msg.content
+                          : `Attachment (${msg.attachmentType})`}
+                      </a>
+                    )}
+                    <span className="text-xs text-gray-400">
+                      {new Date(msg.timestamp).toLocaleTimeString()}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <textarea
+                value={newMessage}
+                onChange={(e) => setNewMessage(e.target.value)}
+                className="input-field"
+                placeholder="Type a message..."
+              />
+              <input
+                type="file"
+                accept=".pdf,.jpg,.jpeg,.png"
+                onChange={(e) =>
+                  setAttachment(e.target.files ? e.target.files[0] : null)
+                }
+                className="mt-2 text-foreground"
+              />
+              <div className="flex justify-end space-x-2 mt-2">
+                <button onClick={closeChatModal} className="btn-secondary">
+                  Close
+                </button>
+                <button onClick={sendMessage} className="btn-primary">
+                  Send
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {notifications.map((notif, index) => (
+          <div
+            key={index}
+            className="fixed top-4 right-4 bg-accent text-foreground p-4 rounded-lg shadow-lg z-50"
+          >
+            New message in chat {notif.chatId}
+          </div>
+        ))}
+      </main>
+
+      {selectedApplicant && (
+        <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 modal">
+          <div className="bg-accent p-6 rounded-lg shadow-lg w-full max-w-2xl max-h-[80vh] overflow-y-auto modal-content relative">
+            <button
+              onClick={() => setSelectedApplicant(null)}
+              className="absolute top-2 right-2 btn-icon"
+              title="Close"
+            >
+              <X className="h-5 w-5" />
+            </button>
+            <h2 className="text-xl font-bold text-primary mb-4">
+              {selectedApplicant.candidate.username}&apos;s Details
+            </h2>
+            {analysis ? (
+              <div className="mt-4 text-foreground">
+                <h3 className="font-bold">AI Analysis</h3>
+                <p>
+                  <strong>Score:</strong> {analysis.score}%
+                </p>
+                <p>
+                  <strong>Feedback:</strong> {analysis.feedback}
+                </p>
+                <p>
+                  <strong>Matched Skills:</strong>{" "}
+                  {analysis.matchedSkills.join(", ") || "None"}
+                </p>
+                <p>
+                  <strong>Missing Skills:</strong>{" "}
+                  {analysis.missingSkills.join(", ") || "None"}
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-foreground">
+                  <div>
+                    <h3 className="font-bold">Contact</h3>
+                    <p>
+                      {selectedApplicant.candidate.resumeParsed?.contact?.name || "N/A"}
+                      <br />
+                      {selectedApplicant.candidate.resumeParsed?.contact?.email || "N/A"}
+                      <br />
+                      {selectedApplicant.candidate.resumeParsed?.contact?.phone || "N/A"}
+                    </p>
+                  </div>
+                  <div>
+                    <h3 className="font-bold">Skills</h3>
+                    <ul className="list-disc pl-4">
+                      {selectedApplicant.candidate.resumeParsed?.skills &&
+                      selectedApplicant.candidate.resumeParsed.skills.length > 0 ? (
+                        selectedApplicant.candidate.resumeParsed.skills.map((s) => (
+                          <li key={s}>{s}</li>
+                        ))
+                      ) : (
+                        <li>N/A</li>
+                      )}
+                    </ul>
+                  </div>
+                  <div>
+                    <h3 className="font-bold">Experience</h3>
+                    {selectedApplicant.candidate.resumeParsed?.experience &&
+                    selectedApplicant.candidate.resumeParsed.experience.length > 0 ? (
+                      selectedApplicant.candidate.resumeParsed.experience.map((e, i) => (
+                        <p key={i}>
+                          {e.title} at {e.company} ({e.years})
+                        </p>
+                      ))
+                    ) : (
+                      <p>N/A</p>
+                    )}
+                  </div>
+                  <div>
+                    <h3 className="font-bold">Education</h3>
+                    {selectedApplicant.candidate.resumeParsed?.education &&
+                    selectedApplicant.candidate.resumeParsed.education.length > 0 ? (
+                      selectedApplicant.candidate.resumeParsed.education.map((e, i) => (
+                        <p key={i}>
+                          {e.degree}, {e.school} ({e.year})
+                        </p>
+                      ))
+                    ) : (
+                      <p>N/A</p>
+                    )}
+                  </div>
+                </div>
+                <div className="mt-4 text-foreground">
+                  <h3 className="font-bold">Cover Letter</h3>
+                  <p>{selectedApplicant.coverLetter || "N/A"}</p>
+                </div>
+                <div className="mt-4 text-foreground">
+                  <h3 className="font-bold">Resume</h3>
+                  {selectedApplicant.candidate.resumeFile ? (
+                    <button
+                      onClick={() =>
+                        handleDownloadResume(selectedApplicant.candidate._id)
+                      }
+                      className="text-primary underline hover:text-primary-hover"
+                    >
+                      Download Resume
+                    </button>
+                  ) : (
+                    <p>No resume available</p>
+                  )}
+                </div>
+              </>
+            )}
+            <button
+              onClick={() => setSelectedApplicant(null)}
+              className="mt-4 btn-primary"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
